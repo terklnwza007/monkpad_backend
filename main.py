@@ -52,6 +52,13 @@ def create_user(user: dict, db: Session = Depends(get_db)):
 
     return {"message": "User created successfully"}
 
+# Get All Users 
+@app.get("/users/all/")
+def read_users(db: Session = Depends(get_db)):
+    rows = db.execute(text('SELECT id, username, email FROM "users"')).fetchall()
+    return [dict(row._mapping) for row in rows]
+
+
 # Get User by ID 
 @app.get("/users/{user_id}")
 def read_user(user_id: int, db: Session = Depends(get_db)):
@@ -63,8 +70,4 @@ def read_user(user_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="User not found")
     return dict(row._mapping)
 
-# Get All Users 
-@app.get("/users/all/")
-def read_users(db: Session = Depends(get_db)):
-    rows = db.execute(text('SELECT id, username, email FROM "users"')).fetchall()
-    return [dict(row._mapping) for row in rows]
+
