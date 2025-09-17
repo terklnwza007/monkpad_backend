@@ -74,22 +74,31 @@ def read_user(user_id: int, db: Session = Depends(get_db)):
 
 # Create tag by user_id
 @app.post("/tags/add/")
-def create_tag(tag: dict, db: Session = Depends(get_db)):
-    user_id = tag.get("user_id")
-    tag = tag.get("tag")
-    type = tag.get("type")
+def create_tag(tag_data: dict, db: Session = Depends(get_db)):
+    user_id = tag_data.get("user_id")
+    tag_name = tag_data.get("tag")
+    tag_type = tag_data.get("type")
 
     # check user_id
-    if not db.execute(text('SELECT id FROM "users" WHERE id = :user_id'),
-                      {"user_id": user_id}).fetchone():
+    if not db.execute(
+        text('SELECT id FROM "users" WHERE id = :user_id'),
+        {"user_id": user_id}
+    ).fetchone():
         raise HTTPException(status_code=400, detail="User ID does not exist")
 
     # insert tag
     db.execute(
-    text('INSERT INTO "tags" (user_id, tag, type, value) VALUES (:user_id, :tag, :type, :value)'),
-            {"user_id": user_id, "tag": tag, "type": type, "value": 0}
+        text('INSERT INTO "tags" (user_id, tag, type, value) VALUES (:user_id, :tag, :type, :value)'),
+        {"user_id": user_id, "tag": tag_name, "type": tag_type, "value": 0}
     )
     db.commit()
 
     return {"message": "Tag created successfully"}
+
+# Get All Tags 
+@app.get("/tags/all/")
+def read_tags(db: Session = Depends(get_db)):
+    rows = db.execute(text('SELECT id, user_id, tag, type, value FROM "tags"')).fetchall()
+    return [dict(row._mapping) for row in rows]
+
 
