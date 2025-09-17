@@ -70,6 +70,7 @@ def read_user(user_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="User not found")
     return dict(row._mapping)
 
+# ===============================================
 
 # Create tag by user_id
 @app.post("/tags/add/")
@@ -85,8 +86,8 @@ def create_tag(tag: dict, db: Session = Depends(get_db)):
 
     # insert tag
     db.execute(
-        text('INSERT INTO "tags" (user_id, tag, type ,value) VALUES (:user_id, :tag, :type )'),
-        {"user_id": user_id, "tag": tag, "type": type ,"value":0}
+    text('INSERT INTO "tags" (user_id, tag, type, value) VALUES (:user_id, :tag, :type, :value)'),
+            {"user_id": user_id, "tag": tag, "type": type, "value": 0}
     )
     db.commit()
 
