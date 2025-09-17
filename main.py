@@ -75,7 +75,7 @@ def read_user(user_id: int, db: Session = Depends(get_db)):
 @app.post("/tags/add/")
 def create_tag(tag: dict, db: Session = Depends(get_db)):
     user_id = tag.get("user_id")
-    name = tag.get("name")
+    tag = tag.get("tag")
     type = tag.get("type")
 
     # check user_id
@@ -85,8 +85,8 @@ def create_tag(tag: dict, db: Session = Depends(get_db)):
 
     # insert tag
     db.execute(
-        text('INSERT INTO "tags" (user_id, tag, type ,value) VALUES (:user_id, :name, :type)'),
-        {"user_id": user_id, "name": name, "type": type ,"value":0}
+        text('INSERT INTO "tags" (user_id, tag, type ,value) VALUES (:user_id, :tag, :type )'),
+        {"user_id": user_id, "tag": tag, "type": type ,"value":0}
     )
     db.commit()
 
