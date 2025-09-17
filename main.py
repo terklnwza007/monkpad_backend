@@ -52,7 +52,7 @@ def create_user(user: dict, db: Session = Depends(get_db)):
 
     return {"message": "User created successfully"}
 
-# Get All Users 
+# Get All Users
 @app.get("/users/all/")
 def read_users(db: Session = Depends(get_db)):
     rows = db.execute(text('SELECT id, username, email FROM "users"')).fetchall()
@@ -70,4 +70,25 @@ def read_user(user_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="User not found")
     return dict(row._mapping)
 
+
+# Create tag by user_id
+@app.post("/tags/add/")
+def create_tag(tag: dict, db: Session = Depends(get_db)):
+    user_id = tag.get("user_id")
+    name = tag.get("name")
+    type = tag.get("type")
+
+    # check user_id
+    if not db.execute(text('SELECT id FROM "users" WHERE id = :user_id'),
+                      {"user_id": user_id}).fetchone():
+        raise HTTPException(status_code=400, detail="User ID does not exist")
+
+    # insert tag
+    db.execute(
+        text('INSERT INTO "tags" (user_id, tag, type ,value) VALUES (:user_id, :name, :type)'),
+        {"user_id": user_id, "name": name, "type": type ,"value":0}
+    )
+    db.commit()
+
+    return {"message": "Tag created successfully"}
 
