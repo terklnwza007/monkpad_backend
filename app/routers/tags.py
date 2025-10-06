@@ -6,6 +6,16 @@ from app.database import get_db
 
 router = APIRouter(prefix="/tags", tags=["Tags"])
 
+# ================= ตัวอย่าง JSON =================
+"""
+{
+    "user_id": 1,
+    "tag": "อาหาร",
+    "type": "expense"
+}
+"""
+# ================================================
+
 @router.post("/add/")
 def create_tag(tag_data: dict = Body(...), db: Session = Depends(get_db)):
     user_id = tag_data.get("user_id")

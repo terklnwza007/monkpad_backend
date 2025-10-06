@@ -16,34 +16,66 @@ def read_month_result(user_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="No month results found for this user")
     return [dict(r._mapping) for r in rows]
 
+
+# ================= ตัวอย่าง JSON =================
+"""
+{
+    "user_id": 1,
+    "month": 1,
+    "year": 2024
+}
+"""
+# ================================================
+
 @router.post("/add/")
 def create_month_result(data: dict = Body(...), db: Session = Depends(get_db)):
     user_id = data.get("user_id")
     month = data.get("month")
     year = data.get("year")
-    income = data.get("income", 0)
-    expense = data.get("expense", 0)
 
+    # ตรวจสอบค่าที่จำเป็น
     if not user_id or not month or not year:
-        raise HTTPException(status_code=422, detail="user_id, month, year are required")
+        raise HTTPException(status_code=422, detail="user_id, month, and year are required")
+
     if not (1 <= int(month) <= 12):
         raise HTTPException(status_code=400, detail="month must be 1..12")
 
-    if not db.execute(text('SELECT id FROM "users" WHERE id = :uid'), {"uid": user_id}).fetchone():
+    # ตรวจสอบว่าผู้ใช้มีอยู่จริงไหม
+    user_exists = db.execute(
+        text('SELECT id FROM "users" WHERE id = :uid'),
+        {"uid": user_id}
+    ).fetchone()
+    if not user_exists:
         raise HTTPException(status_code=400, detail="User ID does not exist")
 
-    if db.execute(
+    # ตรวจสอบว่ามี record ของเดือนนั้นอยู่แล้วไหม
+    existing = db.execute(
         text('SELECT id FROM "month_results" WHERE user_id = :uid AND month = :m AND year = :y'),
         {"uid": user_id, "m": month, "y": year}
-    ).fetchone():
+    ).fetchone()
+    if existing:
         raise HTTPException(status_code=400, detail="Month result already exists for this user/month/year")
 
+    # insert income และ expense = 0
     db.execute(
-        text('INSERT INTO "month_results" (user_id, month, year, income, expense) VALUES (:uid, :m, :y, :i, :e)'),
-        {"uid": user_id, "m": month, "y": year, "i": income, "e": expense}
+        text('INSERT INTO "month_results" (user_id, month, year, income, expense) VALUES (:uid, :m, :y, 0, 0)'),
+        {"uid": user_id, "m": month, "y": year}
     )
     db.commit()
-    return {"message": "Month result created successfully"}
+
+    return {"message": "Month result created successfully", "user_id": user_id, "month": month, "year": year}
+
+# ================= ตัวอย่าง JSON =================
+"""
+{
+    "user_id": 1,
+    "month": 1,
+    "year": 2024,
+    "amount": 5000,
+    "type": "income"        (income or expense)
+}
+"""
+# ================================================
 
 @router.put("/update/")
 def update_month_result(data: dict = Body(...), db: Session = Depends(get_db)):
@@ -85,3 +117,11 @@ def update_month_result(data: dict = Body(...), db: Session = Depends(get_db)):
 
     db.commit()
     return {"message": "Month result updated successfully"}
+
+# Exampe JSON Body
+"""
+{
+    user_id:1,
+    
+}
+"""
