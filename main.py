@@ -135,7 +135,19 @@ def read_month_result(user_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="No month results found for this user")
     return [dict(row._mapping) for row in rows]
 
-# Add New Month result by user_id , month , year  
+
+# Add New Month result by user_id , month , year 
+# ================= ตัวอย่าง JSON =================
+"""
+{
+  "user_id": 1,
+  "month": 1,
+  "year": 2024,
+  "income": 10000,
+  "expense": 5000
+}
+"""
+# ===============================================
 @app.post("/month_results/add/" , tags=["Month Results"])
 def create_month_result(data: dict, db: Session = Depends(get_db)):
     user_id = data.get("user_id")
@@ -166,6 +178,33 @@ def create_month_result(data: dict, db: Session = Depends(get_db)):
     db.commit()
 
     return {"message": "Month result created successfully"}
+
+# if user want to update expense in month result  
+@app.put("/month_results/update/" , tags=["Month Results"])
+def update_month_result(data: dict, db: Session = Depends(get_db)):
+    user_id = data.get("user_id")
+    month = data.get("month")
+    year = data.get("year")
+    income = data.get("income")
+    expense = data.get("expense")
+
+    # check if month result exists
+    month_result = db.execute(
+        text('SELECT id FROM "month_results" WHERE user_id = :user_id AND month = :month AND year = :year'),
+        {"user_id": user_id, "month": month, "year": year}
+    ).fetchone()
+    if not month_result:
+        raise HTTPException(status_code=404, detail="Month result not found for this user, month, and year")
+
+    # update month result
+    db.execute(
+        text('UPDATE "month_results" SET income = :income, expense = :expense WHERE id = :id'),
+        {"income": income, "expense": expense, "id": month_result.id}
+    )
+    db.commit()
+
+    return {"message": "Month result updated successfully"}
+
 
 
 
