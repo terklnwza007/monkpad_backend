@@ -122,6 +122,58 @@ def read_tag(user_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="No tags found for this user")
     return [dict(row._mapping) for row in rows]
 
+# ===============================================
+
+# Get Month result by user_id
+@app.get("/month_results/{user_id}" , tags=["Month Results"])
+def read_month_result(user_id: int, db: Session = Depends(get_db)):
+    rows = db.execute(
+        text('SELECT * FROM "month_results" WHERE user_id = :user_id'),
+        {"user_id": user_id}
+    ).fetchall()
+    if not rows:
+        raise HTTPException(status_code=404, detail="No month results found for this user")
+    return [dict(row._mapping) for row in rows]
+
+# Add New Month result by user_id , month , year  
+@app.post("/month_results/add/" , tags=["Month Results"])
+def create_month_result(data: dict, db: Session = Depends(get_db)):
+    user_id = data.get("user_id")
+    month = data.get("month")
+    year = data.get("year")
+    income = data.get("income", 0)
+    expense = data.get("expense", 0)
+    
+    # check user_id
+    if not db.execute(
+        text('SELECT id FROM "users" WHERE id = :user_id'),
+        {"user_id": user_id}
+    ).fetchone():
+        raise HTTPException(status_code=400, detail="User ID does not exist")
+
+    # check duplicate month and year for the same user
+    if db.execute(
+        text('SELECT id FROM "month_results" WHERE user_id = :user_id AND month = :month AND year = :year'),
+        {"user_id": user_id, "month": month, "year": year}
+    ).fetchone():
+        raise HTTPException(status_code=400, detail="Month result for this month and year already exists for this user")
+
+    # insert month result
+    db.execute(
+        text('INSERT INTO "month_results" (user_id, month, year, income, expense) VALUES (:user_id, :month, :year, :income, :expense)'),
+        {"user_id": user_id, "month": month, "year": year, "income": income, "expense": expense}
+    )
+    db.commit()
+
+    return {"message": "Month result created successfully"}
+
+
+
+
+
+
+
+
 
 
 
