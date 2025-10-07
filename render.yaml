@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: monkpad-backend
+    env: python
+    plan: free  # เปลี่ยนเป็น starter หรือ standard ถ้ามี traffic เยอะ
+    buildCommand: |
+      apt-get update && \
+      apt-get install -y tesseract-ocr tesseract-ocr-tha && \
+      pip install --upgrade pip && \
+      pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port 10000
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: DATABASE_URL
+        sync: false    # ใส่ค่าใน Dashboard เอง เช่น postgresql://...
