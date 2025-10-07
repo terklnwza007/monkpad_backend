@@ -8,7 +8,14 @@ from app.security import create_access_token, decode_token, verify_password
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 security = HTTPBearer(auto_error=True)
-
+# ================= ตัวอย่าง JSON =================
+"""
+{
+    "username": "koonteirk",
+    "password": "Teirk@089404xxxx"
+}
+"""
+# ================================================
 @router.post("/login")
 def login(payload: dict = Body(...), db: Session = Depends(get_db)):
     username = payload.get("username")
