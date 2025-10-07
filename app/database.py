@@ -1,7 +1,10 @@
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+import os
+from dotenv import load_dotenv
 
-DATABASE_URL = "postgresql+psycopg2://postgres.kebhrgqohcqveendeksk:Teirk0894042414@aws-1-ap-southeast-1.pooler.supabase.com:6543/postgres"
+load_dotenv()  # โหลดค่าจาก .env
+DATABASE_URL = os.getenv("DATABASE_URL")  # ดึงจาก .env
 
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
