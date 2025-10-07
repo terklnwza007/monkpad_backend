@@ -5,7 +5,7 @@ import bcrypt
 from app.routers.auth import require_user
 from app.database import get_db
 
-router = APIRouter(prefix="/users", tags=["Users"] , dependencies=[Depends(require_user)])
+router = APIRouter(prefix="/users", tags=["Users"] )
 
 # ================= ตัวอย่าง JSON ================= 
 """ 
@@ -41,12 +41,12 @@ def create_user(user: dict = Body(...), db: Session = Depends(get_db)):
     db.commit()
     return {"message": "User created successfully"}
 
-@router.get("/all/")
+@router.get("/all/" , dependencies=[Depends(require_user)])
 def read_users(db: Session = Depends(get_db)):
     rows = db.execute(text('SELECT id, username, email FROM "users"')).fetchall()
     return [dict(r._mapping) for r in rows]
 
-@router.get("/{user_id}")
+@router.get("/{user_id}" , dependencies=[Depends(require_user)])
 def read_user(user_id: int, db: Session = Depends(get_db)):
     row = db.execute(
         text('SELECT id, username, email FROM "users" WHERE id = :id'),
