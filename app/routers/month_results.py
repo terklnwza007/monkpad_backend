@@ -118,10 +118,15 @@ def update_month_result(data: dict = Body(...), db: Session = Depends(get_db)):
     db.commit()
     return {"message": "Month result updated successfully"}
 
-# Exampe JSON Body
-"""
-{
-    user_id:1,
-    
-}
-"""
+
+#find a month result by user_id and year
+@router.get("/{user_id}/{year}")
+def read_month_results_by_year(user_id: int, year: int, db: Session = Depends(get_db)):
+    rows = db.execute(
+        text('SELECT id, user_id, month, year, income, expense FROM "month_results" '
+             'WHERE user_id = :uid AND year = :y ORDER BY month'),
+        {"uid": user_id, "y": year}
+    ).fetchall()
+    if not rows:
+        raise HTTPException(status_code=404, detail="No month results found for this user/year")
+    return [dict(r._mapping) for r in rows]

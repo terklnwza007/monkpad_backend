@@ -58,3 +58,51 @@ def read_tag(user_id: int, db: Session = Depends(get_db)):
     if not rows:
         raise HTTPException(status_code=404, detail="No tags found for this user")
     return [dict(r._mapping) for r in rows]
+
+# # add value to tag by user_id and tag_id
+# #value = old valuse + new value
+# # ตัวอย่าง JSON
+# """
+# {
+#     "user_id": 1,
+#     "tag_id": 2,
+#     "value": 150.75              
+# }
+# """
+# @router.post("/update/")
+# def update_tag_value(data: dict = Body(...), db: Session = Depends(get_db)):
+#     user_id = data.get("user_id")
+#     tag_id = data.get("tag_id")
+#     value = data.get("value")
+
+#     if user_id is None or tag_id is None or value is None:
+#         raise HTTPException(status_code=422, detail="user_id, tag_id, and value are required")
+#     if not isinstance(value, (int, float)):
+#         raise HTTPException(status_code=422, detail="value must be a number")
+
+#     try:
+#         value = float(value)
+#     except Exception:
+#         raise HTTPException(status_code=422, detail="value must be a number")
+
+#     # ตรวจ user
+#     if not db.execute(text('SELECT id FROM "users" WHERE id = :uid'), {"uid": user_id}).fetchone():
+#         raise HTTPException(status_code=400, detail="User ID does not exist")
+
+#     # ตรวจ tag ของ user เดียวกัน
+#     tag = db.execute(
+#         text('SELECT id, value FROM "tags" WHERE id = :tid AND user_id = :uid'),
+#         {"tid": tag_id, "uid": user_id}
+#     ).fetchone()
+#     if not tag:
+#         raise HTTPException(status_code=400, detail="Tag ID does not exist for this user")
+
+#     old_value = tag._mapping["value"]
+#     new_value = old_value + value
+
+#     db.execute(
+#         text('UPDATE "tags" SET value = :v WHERE id = :tid AND user_id = :uid'),
+#         {"v": new_value, "tid": tag_id, "uid": user_id}
+#     )
+#     db.commit()
+#     return {"message": "Tag value updated successfully", "new_value": new_value}
