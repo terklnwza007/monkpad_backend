@@ -189,7 +189,7 @@ def delete_transaction(transaction_id: int, db: Session = Depends(get_db)):
 
 
 #ดู transaction ทั้งหมดของ user_id
-@router.get("/transactions/{user_id}")
+@router.get("/{user_id}")
 def get_transactions_by_user(user_id: int, db: Session = Depends(get_db)):
     transactions = db.execute(
         text('SELECT * FROM "transactions" WHERE user_id = :uid ORDER BY date DESC, time DESC'),
