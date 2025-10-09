@@ -107,3 +107,26 @@ def read_tag(user_id: int, db: Session = Depends(get_db)):
 #     )
 #     db.commit()
 #     return {"message": "Tag value updated successfully", "new_value": new_value}
+
+#delete tag by tag_id
+@router.delete("/delete/{tag_id}")
+def delete_tag(tag_id: int, db: Session = Depends(get_db)):
+    tag = db.execute(
+        text('SELECT id FROM "tags" WHERE id = :tid'),
+        {"tid": tag_id}
+    ).fetchone()
+    if not tag:
+        raise HTTPException(status_code=404, detail="Tag not found")
+
+    # ตรวจสอบว่ามี transaction ที่ใช้ tag นี้อยู่ไหม
+    tr = db.execute(
+        text('SELECT id FROM "transactions" WHERE tag_id = :tid'),
+        {"tid": tag_id}
+    ).fetchone()
+    if tr:
+        raise HTTPException(status_code=400, detail="Cannot delete tag with existing transactions")
+
+    db.execute(
+        text('DELETE FROM "tags" WHERE id = :tid'),
+        {"tid": tag_id}
+    )
