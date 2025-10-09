@@ -108,48 +108,53 @@ def read_tag(user_id: int, db: Session = Depends(get_db)):
 #     db.commit()
 #     return {"message": "Tag value updated successfully", "new_value": new_value}
 
-#delete tag by tag_id and change tag in transactions to "รายจ่ายอื่นๆ" or "รายรับอื่นๆ" depending on type of tag before delete
-@router.delete("/delete/{tag_id}/{user_id}")
-def delete_tag(tag_id: int, user_id: int, db: Session = Depends(get_db)):
-    # ตรวจ tag ของ user เดียวกัน
+
+#ลบเเท็กโดยเปลี่ยนเเท็กใน transactions เป็น "รายจ่ายอื่นๆ" หรือ "รายรับอื่นๆ" เเละเพิ่มค่า value ไปที่เเท็ก "รายจ่ายอื่นๆ" หรือ "รายรับอื่นๆ" ขึ้นอยู่กับประเภทของเเท็กก่อนลบ
+@router.delete("/delete/{user_id}/{tag_id}")
+def delete_tag(user_id: int, tag_id: int, db: Session = Depends(get_db)):
+    # ตรวจสอบว่า tag มีอยู่จริงไหม
     tag = db.execute(
-        text('SELECT id, tag, type FROM "tags" WHERE id = :tid AND user_id = :uid'),
+        text('SELECT id, tag, type, value FROM "tags" WHERE id = :tid AND user_id = :uid'),
         {"tid": tag_id, "uid": user_id}
     ).fetchone()
     if not tag:
-        raise HTTPException(status_code=400, detail="Tag ID does not exist for this user")
+        raise HTTPException(status_code=404, detail="Tag not found for this user")
 
     tag_data = tag._mapping
     tag_type = tag_data["type"]
+    tag_value = tag_data["value"]
 
-    # หา tag สำรอง
-    if tag_type == "income":
-        backup_tag = db.execute(
-            text('SELECT id FROM "tags" WHERE user_id = :uid AND tag = :t'),
-            {"uid": user_id, "t": "รายรับอื่นๆ"}
-        ).fetchone()
-    else:
-        backup_tag = db.execute(
-            text('SELECT id FROM "tags" WHERE user_id = :uid AND tag = :t'),
-            {"uid": user_id, "t": "รายจ่ายอื่นๆ"}
-        ).fetchone()
+    # หา tag สำรอง (รายรับอื่นๆ หรือ รายจ่ายอื่นๆ)
+    default_tag_name = "รายรับอื่นๆ" if tag_type == "income" else "รายจ่ายอื่นๆ"
+    default_tag = db.execute(
+        text('SELECT id, value FROM "tags" WHERE user_id = :uid AND tag = :t'),
+        {"uid": user_id, "t": default_tag_name}
+    ).fetchone()
+    if not default_tag:
+        raise HTTPException(status_code=400, detail=f"Default tag '{default_tag_name}' does not exist for this user")
 
-    if not backup_tag:
-        raise HTTPException(status_code=400, detail="Backup tag does not exist. Please create it first.")
+    default_tag_data = default_tag._mapping
+    default_tag_id = default_tag_data["id"]
+    default_tag_value = default_tag_data["value"]
 
-    backup_tag_id = backup_tag._mapping["id"]
-
-    # อัพเดต transactions ให้ใช้ tag สำรอง
+    # ย้าย transactions ไปที่ tag สำรอง
     db.execute(
-        text('UPDATE "transactions" SET tag_id = :btid WHERE tag_id = :tid AND user_id = :uid'),
-        {"btid": backup_tag_id, "tid": tag_id, "uid": user_id}
+        text('UPDATE "transactions" SET tag_id = :new_tid WHERE user_id = :uid AND tag_id = :old_tid'),
+        {"new_tid": default_tag_id, "uid": user_id, "old_tid": tag_id}
     )
 
-    # ลบ tag
+    # เพิ่มค่า value ไปที่ tag สำรอง
+    new_default_value = default_tag_value + tag_value
+    db.execute(
+        text('UPDATE "tags" SET value = :v WHERE id = :tid AND user_id = :uid'),
+        {"v": new_default_value, "tid": default_tag_id, "uid": user_id}
+    )
+
+    # ลบ tag ที่ต้องการลบ
     db.execute(
         text('DELETE FROM "tags" WHERE id = :tid AND user_id = :uid'),
         {"tid": tag_id, "uid": user_id}
     )
 
     db.commit()
-    return {"message": "Tag deleted successfully and transactions updated to backup tag"}
+    return {"message": "Tag deleted successfully and transactions moved to default tag"}
