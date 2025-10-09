@@ -186,3 +186,15 @@ def delete_transaction(transaction_id: int, db: Session = Depends(get_db)):
     db.commit()
     return {"message": "Transaction deleted successfully"}
 # ================================================
+
+
+#ดู transaction ทั้งหมดของ user_id
+@router.get("/transactions/{user_id}")
+def get_transactions_by_user(user_id: int, db: Session = Depends(get_db)):
+    transactions = db.execute(
+        text('SELECT * FROM "transactions" WHERE user_id = :uid ORDER BY date DESC, time DESC'),
+        {"uid": user_id}
+    ).fetchall()
+    result = [dict(row._mapping) for row in transactions]
+    return {"transactions": result}
+
