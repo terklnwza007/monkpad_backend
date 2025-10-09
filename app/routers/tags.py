@@ -110,20 +110,15 @@ def read_tag(user_id: int, db: Session = Depends(get_db)):
 
 
 # ลบแท็ก:
-# - ต้องพิมพ์ชื่อแท็กให้ตรงผ่านฟิลด์ confirm_name ใน body
+
 # - ห้ามลบ "รายจ่ายอื่นๆ" และ "รายรับอื่นๆ"
 # - จะย้ายธุรกรรมทั้งหมดไปยังแท็กพื้นฐานที่ตรงประเภท แล้วบวก value เข้าแท็กพื้นฐาน
 @router.delete("/delete/{user_id}/{tag_id}")
 def delete_tag(
     user_id: int,
     tag_id: int,
-    payload: dict = Body(...),
     db: Session = Depends(get_db)
 ):
-    confirm_name = (payload or {}).get("confirm_name")
-    if not confirm_name:
-        raise HTTPException(status_code=422, detail="confirm_name is required")
-
     # ตรวจสอบว่า tag มีอยู่จริงไหม
     tag = db.execute(
         text('SELECT id, user_id, tag, type, value FROM "tags" WHERE id = :tid AND user_id = :uid'),
@@ -137,15 +132,11 @@ def delete_tag(
     tag_type = tag_data["type"]
     tag_value = tag_data["value"]
 
-    # กันลบแท็กตั้งต้น 2 ตัวแรก
+    # ❗ กันลบแท็กตั้งต้น 2 ตัวแรก (ยังบังคับไว้ที่ backend)
     if tag_name in ("รายจ่ายอื่นๆ", "รายรับอื่นๆ"):
         raise HTTPException(status_code=400, detail="Default tags cannot be deleted")
 
-    # ต้องพิมพ์ชื่อแท็กให้ตรง
-    if str(confirm_name).strip() != str(tag_name).strip():
-        raise HTTPException(status_code=400, detail="Tag name does not match for deletion confirmation")
-
-    # หาแท็กสำรอง (รายรับอื่นๆ หรือ รายจ่ายอื่นๆ)
+    # หาแท็กสำรอง (รายรับอื่นๆ หรือ รายจ่ายอื่นๆ) เพื่อย้ายธุรกรรม
     default_tag_name = "รายรับอื่นๆ" if tag_type == "income" else "รายจ่ายอื่นๆ"
     default_tag = db.execute(
         text('SELECT id, value FROM "tags" WHERE user_id = :uid AND tag = :t'),
@@ -154,28 +145,30 @@ def delete_tag(
     if not default_tag:
         raise HTTPException(status_code=400, detail=f"Default tag '{default_tag_name}' does not exist for this user")
 
-    default_tag_data = default_tag._mapping
-    default_tag_id = default_tag_data["id"]
-    default_tag_value = default_tag_data["value"]
+    default_tag_id = default_tag._mapping["id"]
+    default_tag_value = default_tag._mapping["value"]
 
-    # ย้าย transactions ไปที่แท็กสำรอง
+    # ย้าย transactions ทั้งหมดไปยังแท็กสำรอง
     db.execute(
         text('UPDATE "transactions" SET tag_id = :new_tid WHERE user_id = :uid AND tag_id = :old_tid'),
         {"new_tid": default_tag_id, "uid": user_id, "old_tid": tag_id}
     )
 
-    # เพิ่มค่า value ไปที่แท็กสำรอง
+    # รวม value เข้ากับแท็กสำรอง
     new_default_value = default_tag_value + tag_value
     db.execute(
         text('UPDATE "tags" SET value = :v WHERE id = :tid AND user_id = :uid'),
         {"v": new_default_value, "tid": default_tag_id, "uid": user_id}
     )
 
-    # ลบแท็ก
+    # ลบแท็กเป้าหมาย
     db.execute(
         text('DELETE FROM "tags" WHERE id = :tid AND user_id = :uid'),
         {"tid": tag_id, "uid": user_id}
     )
 
     db.commit()
-    return {"message": "Tag deleted successfully and transactions moved to default tag", "moved_to": default_tag_name}
+    return {
+        "message": "Tag deleted successfully and transactions moved to default tag",
+        "moved_to": default_tag_name
+    }
