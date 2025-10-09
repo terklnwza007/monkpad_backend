@@ -108,25 +108,48 @@ def read_tag(user_id: int, db: Session = Depends(get_db)):
 #     db.commit()
 #     return {"message": "Tag value updated successfully", "new_value": new_value}
 
-#delete tag by tag_id
-@router.delete("/delete/{tag_id}")
-def delete_tag(tag_id: int, db: Session = Depends(get_db)):
+#delete tag by tag_id and change tag in transactions to "รายจ่ายอื่นๆ" or "รายรับอื่นๆ" depending on type of tag before delete
+@router.delete("/delete/{tag_id}/{user_id}")
+def delete_tag(tag_id: int, user_id: int, db: Session = Depends(get_db)):
+    # ตรวจ tag ของ user เดียวกัน
     tag = db.execute(
-        text('SELECT id FROM "tags" WHERE id = :tid'),
-        {"tid": tag_id}
+        text('SELECT id, tag, type FROM "tags" WHERE id = :tid AND user_id = :uid'),
+        {"tid": tag_id, "uid": user_id}
     ).fetchone()
     if not tag:
-        raise HTTPException(status_code=404, detail="Tag not found")
+        raise HTTPException(status_code=400, detail="Tag ID does not exist for this user")
 
-    # ตรวจสอบว่ามี transaction ที่ใช้ tag นี้อยู่ไหม
-    tr = db.execute(
-        text('SELECT id FROM "transactions" WHERE tag_id = :tid'),
-        {"tid": tag_id}
-    ).fetchone()
-    if tr:
-        raise HTTPException(status_code=400, detail="Cannot delete tag with existing transactions")
+    tag_data = tag._mapping
+    tag_type = tag_data["type"]
 
+    # หา tag สำรอง
+    if tag_type == "income":
+        backup_tag = db.execute(
+            text('SELECT id FROM "tags" WHERE user_id = :uid AND tag = :t'),
+            {"uid": user_id, "t": "รายรับอื่นๆ"}
+        ).fetchone()
+    else:
+        backup_tag = db.execute(
+            text('SELECT id FROM "tags" WHERE user_id = :uid AND tag = :t'),
+            {"uid": user_id, "t": "รายจ่ายอื่นๆ"}
+        ).fetchone()
+
+    if not backup_tag:
+        raise HTTPException(status_code=400, detail="Backup tag does not exist. Please create it first.")
+
+    backup_tag_id = backup_tag._mapping["id"]
+
+    # อัพเดต transactions ให้ใช้ tag สำรอง
     db.execute(
-        text('DELETE FROM "tags" WHERE id = :tid'),
-        {"tid": tag_id}
+        text('UPDATE "transactions" SET tag_id = :btid WHERE tag_id = :tid AND user_id = :uid'),
+        {"btid": backup_tag_id, "tid": tag_id, "uid": user_id}
     )
+
+    # ลบ tag
+    db.execute(
+        text('DELETE FROM "tags" WHERE id = :tid AND user_id = :uid'),
+        {"tid": tag_id, "uid": user_id}
+    )
+
+    db.commit()
+    return {"message": "Tag deleted successfully and transactions updated to backup tag"}
