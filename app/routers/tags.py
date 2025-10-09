@@ -109,22 +109,43 @@ def read_tag(user_id: int, db: Session = Depends(get_db)):
 #     return {"message": "Tag value updated successfully", "new_value": new_value}
 
 
-#ลบเเท็กโดยเปลี่ยนเเท็กใน transactions เป็น "รายจ่ายอื่นๆ" หรือ "รายรับอื่นๆ" เเละเพิ่มค่า value ไปที่เเท็ก "รายจ่ายอื่นๆ" หรือ "รายรับอื่นๆ" ขึ้นอยู่กับประเภทของเเท็กก่อนลบ
+# ลบแท็ก:
+# - ต้องพิมพ์ชื่อแท็กให้ตรงผ่านฟิลด์ confirm_name ใน body
+# - ห้ามลบ "รายจ่ายอื่นๆ" และ "รายรับอื่นๆ"
+# - จะย้ายธุรกรรมทั้งหมดไปยังแท็กพื้นฐานที่ตรงประเภท แล้วบวก value เข้าแท็กพื้นฐาน
 @router.delete("/delete/{user_id}/{tag_id}")
-def delete_tag(user_id: int, tag_id: int, db: Session = Depends(get_db)):
+def delete_tag(
+    user_id: int,
+    tag_id: int,
+    payload: dict = Body(...),
+    db: Session = Depends(get_db)
+):
+    confirm_name = (payload or {}).get("confirm_name")
+    if not confirm_name:
+        raise HTTPException(status_code=422, detail="confirm_name is required")
+
     # ตรวจสอบว่า tag มีอยู่จริงไหม
     tag = db.execute(
-        text('SELECT id, tag, type, value FROM "tags" WHERE id = :tid AND user_id = :uid'),
+        text('SELECT id, user_id, tag, type, value FROM "tags" WHERE id = :tid AND user_id = :uid'),
         {"tid": tag_id, "uid": user_id}
     ).fetchone()
     if not tag:
         raise HTTPException(status_code=404, detail="Tag not found for this user")
 
     tag_data = tag._mapping
+    tag_name = tag_data["tag"]
     tag_type = tag_data["type"]
     tag_value = tag_data["value"]
 
-    # หา tag สำรอง (รายรับอื่นๆ หรือ รายจ่ายอื่นๆ)
+    # กันลบแท็กตั้งต้น 2 ตัวแรก
+    if tag_name in ("รายจ่ายอื่นๆ", "รายรับอื่นๆ"):
+        raise HTTPException(status_code=400, detail="Default tags cannot be deleted")
+
+    # ต้องพิมพ์ชื่อแท็กให้ตรง
+    if str(confirm_name).strip() != str(tag_name).strip():
+        raise HTTPException(status_code=400, detail="Tag name does not match for deletion confirmation")
+
+    # หาแท็กสำรอง (รายรับอื่นๆ หรือ รายจ่ายอื่นๆ)
     default_tag_name = "รายรับอื่นๆ" if tag_type == "income" else "รายจ่ายอื่นๆ"
     default_tag = db.execute(
         text('SELECT id, value FROM "tags" WHERE user_id = :uid AND tag = :t'),
@@ -137,24 +158,24 @@ def delete_tag(user_id: int, tag_id: int, db: Session = Depends(get_db)):
     default_tag_id = default_tag_data["id"]
     default_tag_value = default_tag_data["value"]
 
-    # ย้าย transactions ไปที่ tag สำรอง
+    # ย้าย transactions ไปที่แท็กสำรอง
     db.execute(
         text('UPDATE "transactions" SET tag_id = :new_tid WHERE user_id = :uid AND tag_id = :old_tid'),
         {"new_tid": default_tag_id, "uid": user_id, "old_tid": tag_id}
     )
 
-    # เพิ่มค่า value ไปที่ tag สำรอง
+    # เพิ่มค่า value ไปที่แท็กสำรอง
     new_default_value = default_tag_value + tag_value
     db.execute(
         text('UPDATE "tags" SET value = :v WHERE id = :tid AND user_id = :uid'),
         {"v": new_default_value, "tid": default_tag_id, "uid": user_id}
     )
 
-    # ลบ tag ที่ต้องการลบ
+    # ลบแท็ก
     db.execute(
         text('DELETE FROM "tags" WHERE id = :tid AND user_id = :uid'),
         {"tid": tag_id, "uid": user_id}
     )
 
     db.commit()
-    return {"message": "Tag deleted successfully and transactions moved to default tag"}
+    return {"message": "Tag deleted successfully and transactions moved to default tag", "moved_to": default_tag_name}
