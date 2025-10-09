@@ -188,11 +188,11 @@ def delete_transaction(transaction_id: int, db: Session = Depends(get_db)):
 # ================================================
 
 
-#ดู transaction ทั้งหมดของ user_id
+#ดู transaction ทั้งหมดของ user_id โดย join tags เพื่อดู type ของ tag  เเละชื่อ tag 
 @router.get("/{user_id}")
 def get_transactions_by_user(user_id: int, db: Session = Depends(get_db)):
     transactions = db.execute(
-        text('SELECT * FROM "transactions" WHERE user_id = :uid ORDER BY date DESC, time DESC'),
+        text('SELECT t.tag_id, t.value, t.date, t.time, tg.type, tg.tag FROM "transactions" t JOIN "tags" tg ON t.tag_id = tg.id WHERE t.user_id = :uid ORDER BY t.date DESC, t.time DESC'),
         {"uid": user_id}
     ).fetchall()
     result = [dict(row._mapping) for row in transactions]
