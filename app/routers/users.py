@@ -1,4 +1,3 @@
-# app/routers/users.py
 from fastapi import APIRouter, Depends, HTTPException, Body
 from sqlalchemy.orm import Session
 from sqlalchemy import text
@@ -21,6 +20,7 @@ router = APIRouter(prefix="/users", tags=["Users"])
 }
 """
 # ===============================================
+
 @router.post("/add/")  # สมัครไม่ต้อง auth
 def create_user(user: dict = Body(...), db: Session = Depends(get_db)):
     username = user.get("username")
@@ -39,37 +39,37 @@ def create_user(user: dict = Body(...), db: Session = Depends(get_db)):
     hashed_password = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
     try:
-        with db.begin():
-            # สร้าง user + ดึง id กลับมา
-            row = db.execute(
-                text('INSERT INTO "users" (username, password, email) VALUES (:u, :p, :e) RETURNING id'),
-                {"u": username, "p": hashed_password, "e": email}
-            ).fetchone()
-            uid = row._mapping["id"]
+        # --- เริ่มทำงานในทรานแซคชันปัจจุบันของ Session ---
+        row = db.execute(
+            text('INSERT INTO "users" (username, password, email) VALUES (:u, :p, :e) RETURNING id'),
+            {"u": username, "p": hashed_password, "e": email}
+        ).fetchone()
+        uid = row._mapping["id"]
 
-            # seed แท็ก 2 อัน ถ้ายังไม่มี
-            db.execute(
-                text('''
-                    INSERT INTO "tags" (user_id, tag, type, value)
-                    SELECT :uid, :t, :ty, 0
-                    WHERE NOT EXISTS (SELECT 1 FROM "tags" WHERE user_id = :uid AND tag = :t)
-                '''),
-                {"uid": uid, "t": "รายรับอื่นๆ", "ty": "income"}
-            )
-            db.execute(
-                text('''
-                    INSERT INTO "tags" (user_id, tag, type, value)
-                    SELECT :uid, :t, :ty, 0
-                    WHERE NOT EXISTS (SELECT 1 FROM "tags" WHERE user_id = :uid AND tag = :t)
-                '''),
-                {"uid": uid, "t": "รายจ่ายอื่นๆ", "ty": "expense"}
-            )
+        # seed แท็กเริ่มต้น 2 อัน (กันซ้ำด้วย NOT EXISTS)
+        db.execute(
+            text('''
+                INSERT INTO "tags" (user_id, tag, type, value)
+                SELECT :uid, :t, :ty, 0
+                WHERE NOT EXISTS (SELECT 1 FROM "tags" WHERE user_id = :uid AND tag = :t)
+            '''),
+            {"uid": uid, "t": "รายรับอื่นๆ", "ty": "income"}
+        )
+        db.execute(
+            text('''
+                INSERT INTO "tags" (user_id, tag, type, value)
+                SELECT :uid, :t, :ty, 0
+                WHERE NOT EXISTS (SELECT 1 FROM "tags" WHERE user_id = :uid AND tag = :t)
+            '''),
+            {"uid": uid, "t": "รายจ่ายอื่นๆ", "ty": "expense"}
+        )
 
+        db.commit()  # ✅ commit ตรง ๆ แทนการใช้ with db.begin()
         return {"message": "User created successfully", "user_id": uid}
+
     except Exception as e:
-        # log ข้อผิดพลาดจริง ลง stdout (Render logs จะเห็น trace และข้อความนี้)
+        db.rollback()  # ✅ rollback เมื่อผิดพลาด
         log.exception("Failed to create user and default tags: %s", e)
-        # ส่งข้อความย่อให้ client
         raise HTTPException(status_code=500, detail="Failed to create user and default tags")
 
 # ====== เส้นทางที่ต้องล็อกอินค่อยคุมด้วย require_user ======
