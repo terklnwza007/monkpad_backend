@@ -255,7 +255,7 @@ async def parse_ocr(file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="Empty file")
 
     files = {
-        # 👇 ต้องเป็น "file" ไม่ใช่ "filename"
+        
         "file": (file.filename or "image.jpg", content, file.content_type or "image/jpeg")
     }
     data = {
@@ -280,7 +280,6 @@ async def parse_ocr(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"OCR upstream error: {e}")
 
-    # ถ้าได้ 403 อีก แสดงข้อความจาก upstream ชัด ๆ
     if resp.status_code != 200:
         body = ""
         try:
