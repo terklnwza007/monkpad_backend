@@ -173,19 +173,75 @@ def extract_date_iso(text: str) -> str | None:
     return None
 
 def extract_time_hhmm(text: str) -> str | None:
-    m1 = re.search(r"\b(\d{2})[:.](\d{2})\b", text)
-    if m1:
-        return f"{m1.group(1)}:{m1.group(2)}"
-    m2 = re.search(r"\b(\d{2})(\d{2})\b", text)
-    if m2:
-        return f"{m2.group(1)}:{m2.group(2)}"
-    return None
+    """
+    ดึงเวลา HH:MM โดยหลีกเลี่ยงการอ่านทศนิยมของจำนวนเงินเป็นเวลา
+    เกณฑ์:
+      - ชั่วโมง 00–23, นาที 00–59
+      - ให้คะแนนพิเศษถ้ามีคำว่า 'เวลา' หรือมีวันที่อยู่ในบรรทัด/บรรทัดข้างเคียง
+      - ไม่รับรูปแบบมี '.' บนบรรทัดที่เป็นจำนวนเงิน/สกุลเงิน (เช่น 35.00 THB)
+      - ให้ ':' ดีกว่า '.'
+    """
+    if not text:
+        return None
 
-class OCRParsed(BaseModel):
-    amount: str | None = None   # "1234.50"
-    date:   str | None = None   # "YYYY-MM-DD"
-    time:   str | None = None   # "HH:MM"
-    text:   str | None = None   # raw text เผื่อ debug
+    amount_kw = ["จำนวนเงิน", "ค่าธรรมเนียม", "baht", "บาท", "thb", "รวม", "ยอด"]
+    time_kw = ["เวลา", "time"]
+    # เดือนภาษาไทยเพื่อช่วยบอกว่าบรรทัดนี้คือวันที่
+    month_alt = "|".join(re.escape(k) for k in TH_MONTHS.keys())
+    date_pat_th = re.compile(rf"\b\d{{1,2}}\s*({month_alt})\s*(?:พ\.ศ\.\s*)?\d{{2,4}}\b")
+    date_pat_num = re.compile(r"\b\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4}\b")
+
+    # เตรียมบรรทัด
+    raw_lines = [ln for ln in text.splitlines() if ln.strip()]
+    lines = [re.sub(r"\s+", " ", ln.strip().lower()) for ln in raw_lines]
+
+    candidates: list[tuple[str, float]] = []
+    for i, ln in enumerate(lines):
+        # ตรวจ flag บริบท
+        is_amount_line = any(k in ln for k in amount_kw)
+        has_time_kw = any(k in ln for k in time_kw)
+        has_date_here = bool(date_pat_th.search(ln) or date_pat_num.search(ln))
+        has_date_neighbor = False
+        for j in (i - 1, i + 1):
+            if 0 <= j < len(lines):
+                if date_pat_th.search(lines[j]) or date_pat_num.search(lines[j]):
+                    has_date_neighbor = True
+                    break
+        has_time_kw_neighbor = False
+        for j in (i - 1, i + 1):
+            if 0 <= j < len(lines):
+                if any(k in lines[j] for k in time_kw):
+                    has_time_kw_neighbor = True
+                    break
+
+        # หาเวลาแบบ HH:MM (ให้ความสำคัญ)
+        for m in re.finditer(r"\b([01]?\d|2[0-3]):([0-5]\d)\b", ln):
+            hh, mm = int(m.group(1)), int(m.group(2))
+            score = 5.0  # base สำหรับ ':'
+            if has_time_kw: score += 8
+            if has_time_kw_neighbor: score += 5
+            if has_date_here: score += 5
+            if has_date_neighbor: score += 3
+            if is_amount_line: score -= 6  # ถ้าบรรทัดพูดถึงจำนวนเงิน ไม่น่าใช่เวลา
+            candidates.append((f"{hh:02d}:{mm:02d}", score))
+
+        # หาเวลาแบบ HH.MM แต่ **ข้าม** บรรทัดเงิน
+        if not is_amount_line:
+            for m in re.finditer(r"\b([01]?\d|2[0-3])[.]([0-5]\d)\b", ln):
+                hh, mm = int(m.group(1)), int(m.group(2))
+                score = 2.0  # base สำหรับ '.'
+                if has_time_kw: score += 8
+                if has_time_kw_neighbor: score += 5
+                if has_date_here: score += 5
+                if has_date_neighbor: score += 3
+                candidates.append((f"{hh:02d}:{mm:02d}", score))
+
+    if not candidates:
+        return None
+
+    # เลือกคะแนนสูงสุด; ถ้าเท่ากัน เลือกแบบ ':' มาก่อน (เราให้ base สูงกว่าอยู่แล้ว)
+    candidates.sort(key=lambda x: x[1], reverse=True)
+    return candidates[0][0]
 
 # ---------- Endpoint ----------
 @router.post("/parse")
