@@ -53,7 +53,7 @@ def read_tags(db: Session = Depends(get_db)):
 @router.get("/{user_id}")
 def read_tag(user_id: int, db: Session = Depends(get_db)):
     rows = db.execute(
-        text('SELECT id, user_id, tag, type, value FROM "tags" WHERE user_id = :uid'),
+        text('SELECT id, user_id, tag, type, value FROM "tags" WHERE user_id = :uid ORDER BY id, tag'),
         {"uid": user_id}
     ).fetchall()
     if not rows:
