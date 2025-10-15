@@ -102,39 +102,64 @@ class OCRParsed(BaseModel):
     text:   str | None = None   # raw text เผื่อ debug
 
 # ---------- Endpoint ----------
-@router.post("/parse", response_model=OCRParsed)
+@router.post("/parse")
 async def parse_ocr(file: UploadFile = File(...)):
-    API_KEY = "YOUR_FREE_OCR_SPACE_KEY"  # <-- ใส่คีย์จริง
+    API_KEY = os.getenv("OCR_SPACE_API_KEY") or "YOUR_FREE_OCR_SPACE_KEY"
+    if not API_KEY or API_KEY == "YOUR_FREE_OCR_SPACE_KEY":
+        raise HTTPException(status_code=500, detail="Missing OCR_SPACE_API_KEY")
+
     content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Empty file")
 
-    files = {"filename": (file.filename or "image.jpg", content, file.content_type or "image/jpeg")}
-    data = {
-        "apikey": API_KEY,
-        "language": "eng+tha",  # รองรับไทย + อังกฤษ
-        "isTable": "true",      # ช่วยจัดรูปแบบตาราง/บิล
+    files = {
+        # 👇 ต้องเป็น "file" ไม่ใช่ "filename"
+        "file": (file.filename or "image.jpg", content, file.content_type or "image/jpeg")
     }
+    data = {
+        # ภาษาที่รองรับไทย: ใช้ "tha" หรือหลายภาษาเช่น "tha,eng"
+        "language": "tha,eng",
+        "isTable": "true",
+        # "OCREngine": 2,   # ลองเปิดถ้าผลลัพธ์ไม่ดี
+        # "scale": "true",  # ช่วยภาพเล็ก
+    }
+    headers = {"apikey": API_KEY}
 
-    async with httpx.AsyncClient(timeout=60) as client:
-        r = await client.post("https://api.ocr.space/parse/image", data=data, files=files)
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(
+                "https://api.ocr.space/parse/image",
+                data=data,
+                files=files,
+                headers=headers,
+            )
+    except httpx.ReadTimeout:
+        raise HTTPException(status_code=504, detail="OCR upstream timed out")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"OCR upstream error: {e}")
 
-    if r.status_code != 200:
-        raise HTTPException(status_code=502, detail=f"OCR.space HTTP {r.status_code}")
+    # ถ้าได้ 403 อีก แสดงข้อความจาก upstream ชัด ๆ
+    if resp.status_code != 200:
+        body = ""
+        try:
+            body = resp.text[:500]
+        except:
+            pass
+        raise HTTPException(status_code=resp.status_code, detail=f"OCR.space HTTP {resp.status_code}: {body}")
 
-    j = r.json()
+    j = resp.json()
     if j.get("IsErroredOnProcessing"):
-        # บางครั้ง ErrorMessage เป็น list
         detail = j.get("ErrorMessage") or j.get("ErrorDetails") or "OCR failed"
         if isinstance(detail, list):
             detail = "; ".join(detail)
         raise HTTPException(status_code=400, detail=detail)
 
     results = j.get("ParsedResults") or []
-    # OCR.space อาจคืนหลาย page: รวมข้อความทั้งหมด
-    full_text = "\n".join((res.get("ParsedText") or "") for res in results).strip()
+    full_text = "\n".join((r.get("ParsedText") or "") for r in results).strip()
 
-    # ---- แยกฟิลด์ ----
+    # ====== ดึง amount/date/time ตามที่เราทำไว้ก่อนหน้า (ย่อ) ======
     amount = extract_amount(full_text)
     date   = extract_date_iso(full_text)
     time   = extract_time_hhmm(full_text)
 
-    return OCRParsed(amount=amount, date=date, time=time, text=full_text)
+    return {"amount": amount, "date": date, "time": time, "text": full_text}
