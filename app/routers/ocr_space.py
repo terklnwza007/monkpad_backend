@@ -114,6 +114,20 @@ def extract_amount(text: str) -> str | None:
 
     return best_raw
 
+def _to_ce(y: int) -> int:
+    """
+    แปลงปีให้เป็น ค.ศ.:
+    - ถ้าเป็น พ.ศ. (>= 2400) → ลบ 543
+    - ถ้าเป็นปี 2 หลัก (0–99) สมมติเป็น พ.ศ. 25YY → แปลงเป็น ค.ศ. YY + 1957
+      ตัวอย่าง: 68 → 2025
+    - มิฉะนั้นคืนค่าเดิม (ถือเป็น ค.ศ. อยู่แล้ว)
+    """
+    if y >= 2400:
+        return y - 543
+    if 0 <= y <= 99:
+        return y + 1957
+    return y
+
 def _from_ddmmyyyy(dd: str, mm: str, yyyy: str) -> str | None:
     try:
         y = int(yyyy); m = int(mm); d = int(dd)
@@ -122,24 +136,40 @@ def _from_ddmmyyyy(dd: str, mm: str, yyyy: str) -> str | None:
         return None
 
 def extract_date_iso(text: str) -> str | None:
-    m1 = re.search(r"\b(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})\b", text)
+    # 0) Normalize ข้อความเล็กน้อย
+    t = text.replace(",", " ")
+
+    # 1) DD/MM/YYYY หรือ DD-MM-YYYY หรือ DD.MM.YYYY (ปี 4 หลัก)
+    m1 = re.search(r"\b(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})\b", t)
     if m1:
-        return _from_ddmmyyyy(m1.group(1), m1.group(2), m1.group(3))
+        y = _to_ce(int(m1.group(3)))
+        return f"{y:04d}-{int(m1.group(2)):02d}-{int(m1.group(1)):02d}"
 
+    # 1.1) DD/MM/YY (ปี 2 หลัก)
+    m1b = re.search(r"\b(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2})\b", t)
+    if m1b:
+        y = _to_ce(int(m1b.group(3)))
+        return f"{y:04d}-{int(m1b.group(2)):02d}-{int(m1b.group(1)):02d}"
+
+    # 2) ไทย: "16 ก.ย. 2568" / "16 กันยายน 68" (รองรับปี 2 หรือ 4 หลัก, อาจมี 'พ.ศ.' แทรก)
     month_alt = "|".join(re.escape(k) for k in TH_MONTHS.keys())
-    m2 = re.search(rf"(\d{{1,2}})\s*({month_alt})\s*(\d{{4}})", text)
+    m2 = re.search(
+        rf"\b(\d{{1,2}})\s*({month_alt})\s*(?:พ\.ศ\.\s*)?(\d{{2,4}})\b",
+        t
+    )
     if m2:
-        d = int(m2.group(1)); mon_txt = m2.group(2); y = int(m2.group(3))
+        d = int(m2.group(1))
+        mon_txt = m2.group(2)
+        y = _to_ce(int(m2.group(3)))
         m = TH_MONTHS.get(mon_txt)
-        if not m:
-            return None
-        if y > 2400:
-            y -= 543
-        return f"{y:04d}-{m:02d}-{d:02d}"
+        if m:
+            return f"{y:04d}-{m:02d}-{d:02d}"
 
-    m3 = re.search(r"\b(20\d{2})-(\d{2})-(\d{2})\b", text)
+    # 3) ISO อยู่แล้ว: YYYY-MM-DD
+    m3 = re.search(r"\b(20\d{2})-(\d{2})-(\d{2})\b", t)
     if m3:
         return m3.group(0)
+
     return None
 
 def extract_time_hhmm(text: str) -> str | None:
