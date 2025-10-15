@@ -117,11 +117,11 @@ async def parse_ocr(file: UploadFile = File(...)):
         "file": (file.filename or "image.jpg", content, file.content_type or "image/jpeg")
     }
     data = {
-        # ภาษาที่รองรับไทย: ใช้ "tha" หรือหลายภาษาเช่น "tha,eng"
-        "language": "tha,eng",
+        
+        "language": "tha",
         "isTable": "true",
-        # "OCREngine": 2,   # ลองเปิดถ้าผลลัพธ์ไม่ดี
-        # "scale": "true",  # ช่วยภาพเล็ก
+        "OCREngine": 2,   
+        "scale": "true",  
     }
     headers = {"apikey": API_KEY}
 
