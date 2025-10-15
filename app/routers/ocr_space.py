@@ -1,8 +1,7 @@
 # app/routers/ocr_space.py
 from fastapi import APIRouter, UploadFile, File, HTTPException
 from pydantic import BaseModel
-import httpx, re
-import os
+import httpx, re, os
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -25,29 +24,95 @@ def _pad2(n: int) -> str:
 def _normalize_amount(s: str | None) -> str | None:
     if not s:
         return None
-    # เก็บเฉพาะตัวเลข เครื่องหมายลบ จุด และคอมมา แล้วลบคอมมาออก
     z = re.sub(r"[^\d\.,-]", "", s).replace(",", "")
     return z if re.fullmatch(r"-?\d+(\.\d+)?", z) else None
 
+# --- คีย์เวิร์ดช่วยตัดสินใจจำนวนเงิน ---
+AMOUNT_KEYWORDS = [
+    "จำนวนเงิน", "ยอดชำระ", "ยอดรวม", "ยอดสุทธิ", "รวมทั้งสิ้น",
+    "amount", "total", "paid", "payment", "grand total", "subtotal"
+]
+CURRENCY_TOKENS = ["บาท", "thb", "฿"]
+NEGATIVE_KEYWORDS = [
+    "รหัสอ้างอิง", "อ้างอิง", "reference", "ref", "เลขที่", "เลขอ้างอิง",
+    "transaction", "txid", "customer", "client", "invoice no", "เลขที่ใบ",
+    "รหัสลูกค้า"
+]
+_amount_num_pat = re.compile(r"-?\d{1,3}(?:[ ,]?\d{3})*(?:\.\d+)?|-?\d+\.\d+")
+
+def _has_any(s: str, words: list[str]) -> bool:
+    return any(w in s for w in words)
+
 def extract_amount(text: str) -> str | None:
-    # ดึง candidate ตัวเลขเงินทั้งหมด แล้วเลือกค่าที่ "มีนัยว่าเป็นจำนวนเงินที่สุด" (ใหญ่มากสุดโดยปกติ)
-    cands = []
-    for m in re.finditer(r"-?\d{1,3}(?:[ ,]?\d{3})*(?:\.\d+)?|-?\d+\.\d+", text):
-        n = _normalize_amount(m.group(0))
-        if n:
-            cands.append(n)
-    if not cands:
+    """
+    เลือกจำนวนเงินโดยให้คะแนนตามบริบทของบรรทัด:
+      +10 ถ้าบรรทัดมีคีย์เวิร์ดจำนวนเงิน
+      +6  ถ้าบรรทัดมีหน่วยสกุล (บาท/THB/฿)
+      +4  ถ้าบรรทัดข้างเคียง (±1) มีคีย์เวิร์ดจำนวนเงิน
+      +3  ถ้าตัวเลขมีทศนิยม
+      -12 ถ้าบรรทัดมีคีย์เวิร์ดอ้างอิง/เลขที่
+      -8  ถ้าเป็นเลขยาวมาก (>=9 หลัก) และไม่มีทศนิยม
+      +1.5 ถ้าค่าอยู่ช่วงสมเหตุสมผล (0 < n < 10 ล้าน)
+    จากนั้นเลือกคะแนนสูงสุด; ถ้าเสมอ เลือกที่มีทศนิยมก่อน
+    """
+    if not text:
         return None
-    best = cands[0]
-    best_num = abs(float(best))
-    for n in cands[1:]:
-        try:
-            v = abs(float(n))
-            if v > best_num:
-                best, best_num = n, v
-        except:
-            pass
-    return best
+
+    lines = [re.sub(r"\s+", " ", ln.strip().lower()) for ln in text.splitlines() if ln.strip()]
+    candidates: list[tuple[str, float]] = []
+
+    for i, ln in enumerate(lines):
+        for m in _amount_num_pat.finditer(ln):
+            raw = _normalize_amount(m.group(0))
+            if not raw:
+                continue
+
+            has_decimal = "." in raw
+            digits_only_len = len(re.sub(r"[^\d]", "", raw))
+
+            score = 0.0
+            if _has_any(ln, [w.lower() for w in AMOUNT_KEYWORDS]):
+                score += 10
+            if _has_any(ln, [w.lower() for w in CURRENCY_TOKENS]):
+                score += 6
+
+            for j in (i - 1, i + 1):
+                if 0 <= j < len(lines):
+                    if _has_any(lines[j], [w.lower() for w in AMOUNT_KEYWORDS]):
+                        score += 4
+
+            if _has_any(ln, [w.lower() for w in NEGATIVE_KEYWORDS]):
+                score -= 12
+
+            if has_decimal:
+                score += 3
+
+            if not has_decimal and digits_only_len >= 9:
+                score -= 8
+
+            try:
+                n = abs(float(raw))
+                if 0 < n < 10_000_000:
+                    score += 1.5
+            except:
+                pass
+
+            candidates.append((raw, score))
+
+    if not candidates:
+        return None
+
+    # เรียงตาม (คะแนน, มีทศนิยมหรือไม่, ความยาวตัวเลข) แล้วเลือกตัวแรก
+    candidates.sort(key=lambda x: (x[1], "." in x[0], -len(x[0])), reverse=True)
+    best_raw, _ = candidates[0]
+
+    # ถ้าตัวที่ได้ไม่มีทศนิยมและคะแนนไม่สูงมาก ลองหาตัวที่มีทศนิยมที่คะแนนดีสุดเป็น fallback
+    if "." not in best_raw:
+        with_decimal = [c for c in candidates if "." in c[0]]
+        if with_decimal:
+            best_raw = max(with_decimal, key=lambda x: x[1])[0]
+
+    return best_raw
 
 def _from_ddmmyyyy(dd: str, mm: str, yyyy: str) -> str | None:
     try:
@@ -57,39 +122,30 @@ def _from_ddmmyyyy(dd: str, mm: str, yyyy: str) -> str | None:
         return None
 
 def extract_date_iso(text: str) -> str | None:
-    # 1) DD/MM/YYYY หรือ DD-MM-YYYY หรือ DD.MM.YYYY
     m1 = re.search(r"\b(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})\b", text)
     if m1:
         return _from_ddmmyyyy(m1.group(1), m1.group(2), m1.group(3))
 
-    # 2) ไทย: "16 ก.ย. 2025" / "16 กันยายน 2568"
     month_alt = "|".join(re.escape(k) for k in TH_MONTHS.keys())
     m2 = re.search(rf"(\d{{1,2}})\s*({month_alt})\s*(\d{{4}})", text)
     if m2:
-        d = int(m2.group(1))
-        mon_txt = m2.group(2)
-        y = int(m2.group(3))
+        d = int(m2.group(1)); mon_txt = m2.group(2); y = int(m2.group(3))
         m = TH_MONTHS.get(mon_txt)
         if not m:
             return None
-        # ถ้าเป็น พ.ศ. (> 2400) แปลงเป็น ค.ศ.
         if y > 2400:
             y -= 543
         return f"{y:04d}-{m:02d}-{d:02d}"
 
-    # 3) ISO อยู่แล้ว: YYYY-MM-DD
     m3 = re.search(r"\b(20\d{2})-(\d{2})-(\d{2})\b", text)
     if m3:
         return m3.group(0)
-
     return None
 
 def extract_time_hhmm(text: str) -> str | None:
-    # 14:32 หรือ 14.32
     m1 = re.search(r"\b(\d{2})[:.](\d{2})\b", text)
     if m1:
         return f"{m1.group(1)}:{m1.group(2)}"
-    # 1432
     m2 = re.search(r"\b(\d{2})(\d{2})\b", text)
     if m2:
         return f"{m2.group(1)}:{m2.group(2)}"
