@@ -1,5 +1,5 @@
 from fastapi import FastAPI
-from app.routers import users, tags, month_results , transactions , auth , ocr_space
+from app.routers import users, tags, month_results , transactions , auth , ocr_space ,password_reset
 from dotenv import load_dotenv  
 import os
 
@@ -14,4 +14,5 @@ app.include_router(month_results.router)
 app.include_router(transactions.router)
 app.include_router(auth.router)
 app.include_router(ocr_space.router)
+app.include_router(password_reset.router)
 
