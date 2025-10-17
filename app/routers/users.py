@@ -5,8 +5,6 @@ from sqlalchemy import text
 import bcrypt
 import logging
 import re
-
-from app.models import User  # เผื่อที่อื่น import ใช้งาน
 from app.routers.auth import require_user
 from app.database import get_db
 
