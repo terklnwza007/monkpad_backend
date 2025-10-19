@@ -7,32 +7,28 @@ import bcrypt
 import secrets
 import logging
 import os
-import smtplib
-from email.message import EmailMessage
 import jwt  # pip install PyJWT
+import resend  # pip install resend
 
 from app.database import get_db
 
 log = logging.getLogger(__name__)
-router = APIRouter(prefix="/password", tags=["Password Reset (SMTP)"])
+router = APIRouter(prefix="/password", tags=["Password Reset (Resend)"])
 
 # ---------- CONFIG ----------
-OTP_LIFETIME_SECONDS = 60  # ลบ OTP ใน 60 วิตามข้อกำหนด
-RESET_TOKEN_TTL_MINUTES = 15
+OTP_LIFETIME_SECONDS = 60           # อายุ OTP ~60s (จะลบแถวอัตโนมัติ)
+RESET_TOKEN_TTL_MINUTES = 15        # อายุ reset token
 
-# SMTP
-SMTP_HOST = os.getenv("SMTP_HOST")
-SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
-SMTP_USER = os.getenv("SMTP_USER")
-SMTP_PASS = os.getenv("SMTP_PASS")
-SMTP_USE_TLS = os.getenv("SMTP_USE_TLS", "1") == "1"
-SMTP_SENDER = os.getenv("SMTP_SENDER", "MonkPad <no-reply@monkpad.app>")
+# Resend
+RESEND_API_KEY = os.getenv("RESEND_API_KEY")  # ต้องมี
+SMTP_SENDER = os.getenv("SMTP_SENDER", "MonkPad <onboarding@resend.dev>")  # sender ของ Resend
 
 # JWT สำหรับ reset token
 RESET_JWT_SECRET = os.getenv("RESET_JWT_SECRET", "change-me")
 RESET_JWT_ALG = os.getenv("RESET_JWT_ALG", "HS256")
 
 
+# ---------- Helpers ----------
 def _now_utc():
     return datetime.now(timezone.utc)
 
@@ -45,49 +41,30 @@ def _hash_code(code: str) -> str:
     return bcrypt.hashpw(code.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
 
-def _send_email_smtp(to_email: str, subject: str, html_body: str, text_body: str = ""):
-    if not SMTP_HOST or not SMTP_PORT or not SMTP_SENDER:
-        raise HTTPException(status_code=500, detail="SMTP is not configured")
+def _init_resend():
+    if not RESEND_API_KEY:
+        raise HTTPException(status_code=500, detail="RESEND_API_KEY is not configured")
+    resend.api_key = RESEND_API_KEY
 
-    msg = EmailMessage()
-    # แกะ display name กับอีเมลผู้ส่ง ถ้าต้องการ
-    msg["From"] = SMTP_SENDER
-    msg["To"] = to_email
-    msg["Subject"] = subject
-    msg.set_content(text_body or " ")
-    msg.add_alternative(html_body, subtype="html")
 
+def _send_email_resend(to_email: str, subject: str, html_body: str, text_body: str = ""):
+    """
+    ส่งอีเมลผ่าน Resend
+    - ต้องใช้ sender ที่อนุญาต (เช่น onboarding@resend.dev หรือโดเมนที่ verify แล้ว)
+    """
+    _init_resend()
     try:
-        if SMTP_USE_TLS:
-            with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15) as s:
-                s.starttls()
-                if SMTP_USER and SMTP_PASS:
-                    s.login(SMTP_USER, SMTP_PASS)
-                s.send_message(msg)
-        else:
-            with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=15) as s:
-                if SMTP_USER and SMTP_PASS:
-                    s.login(SMTP_USER, SMTP_PASS)
-                s.send_message(msg)
+        resend.Emails.send({
+            "from": SMTP_SENDER,
+            "to": to_email,
+            "subject": subject,
+            "html": html_body,
+            # "text": text_body,  # ไม่จำเป็น แต่จะใส่ก็ได้
+        })
     except Exception as e:
-        log.exception("SMTP send error: %s", e)
+        log.exception("Resend API error: %s", e)
+        # error ที่พบบ่อย: 403 domain ไม่ verified
         raise HTTPException(status_code=500, detail="Failed to send email")
-
-
-def _schedule_delete_otp(background: BackgroundTasks, db: Session, otp_id: int):
-    """
-    ลบ row OTP อัตโนมัติใน 60 วินาที โดยไม่ต้องเก็บเวลาในตาราง
-    """
-    def _delete_later(otp_id_inner: int):
-        # ใช้ session ใหม่ต่อดีสุด แต่ตรงนี้ใช้ connection เดิมเพื่อความง่าย
-        try:
-            db.execute(text('DELETE FROM "password_resets" WHERE id = :id'), {"id": otp_id_inner})
-            db.commit()
-        except Exception as e:
-            db.rollback()
-            log.exception("Failed to delete OTP id=%s: %s", otp_id_inner, e)
-
-    background.add_task(lambda: (_delete_later(otp_id)) , )
 
 
 def _mint_reset_token(user_id: int):
@@ -112,10 +89,23 @@ def _parse_reset_token(token: str) -> int:
         raise HTTPException(status_code=400, detail="Invalid reset token")
 
 
+def _del_after(db: Session, otp_id: int):
+    """ลบ row OTP อัตโนมัติใน ~60 วินาที"""
+    import time
+    time.sleep(OTP_LIFETIME_SECONDS)
+    try:
+        db.execute(text('DELETE FROM "password_resets" WHERE id = :id'), {"id": otp_id})
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        log.exception("Failed to auto-delete OTP id=%s: %s", otp_id, e)
+
+
 # =======================================================
-# POST /password/forgot -> ขอรหัส OTP ส่งไปอีเมล (SMTP)
+# POST /password/forgot -> ขอรหัส OTP ส่งไปอีเมล (Resend)
 # Body: { "email": "me@example.com" }
-# ถ้าไม่พบอีเมล -> 404 เพื่อให้ front แจ้งเตือนได้ชัดเจน (ตามข้อ 2)
+# ถ้าไม่พบอีเมล -> 404
+# ลอจิก: สร้างโค้ด -> ส่งเมล (สำเร็จเท่านั้น) -> INSERT -> schedule ลบ
 # =======================================================
 @router.post("/forgot", status_code=status.HTTP_200_OK)
 def forgot_password_request(payload: dict = Body(...),
@@ -131,15 +121,36 @@ def forgot_password_request(payload: dict = Body(...),
     ).fetchone()
 
     if not user_row:
-        # เปลี่ยนจากตอบ 200 เสมอ -> เป็น 404 เพื่อ "แจ้งเตือนและไม่ทำอะไร"
         raise HTTPException(status_code=404, detail="email not registered")
 
     uid = user_row._mapping["id"]
+    username = user_row._mapping.get("username") or email.split("@")[0]
 
-    # gen code + insert (ตารางมีแค่ id, user_id, otp_hash)
+    # 1) สร้างรหัส (แต่ยังไม่บันทึก)
     code = _gen_otp_code()
     code_hash = _hash_code(code)
 
+    # 2) ส่งอีเมลก่อน — ถ้าล้มเหลวจะไม่บันทึก OTP
+    subject = "Your MonkPad password reset code"
+    text_body = (
+        f"Hi {username},\n\n"
+        f"Your password reset code is: {code}\n"
+        f"This code will be valid for about {OTP_LIFETIME_SECONDS} seconds.\n\n"
+        "If you didn’t request this, you can ignore this email."
+    )
+    html_body = f"""
+    <div style="font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; color:#111827">
+      <p>Hi <b>{username}</b>,</p>
+      <p>Your password reset code is</p>
+      <div style="margin:12px 0 16px; font-size:28px; letter-spacing:6px; font-weight:800;">{code}</div>
+      <p>This code will be valid for about <b>{OTP_LIFETIME_SECONDS} seconds</b>.</p>
+      <p style="color:#6b7280; font-size:12px;">If you didn’t request this, you can safely ignore this email.</p>
+    </div>
+    """
+    _send_email_resend(email, subject, html_body, text_body)
+
+    # 3) ส่งสำเร็จแล้ว -> INSERT OTP
+    otp_id = None
     try:
         result = db.execute(
             text('INSERT INTO "password_resets" (user_id, otp_hash) VALUES (:uid, :h) RETURNING id'),
@@ -148,45 +159,27 @@ def forgot_password_request(payload: dict = Body(...),
         otp_id = result.fetchone()[0]
         db.commit()
     except Exception as e:
+        # ล้มเหลวรอบแรก: ลอง retry 1 ครั้ง (กันเคส race/connection)
+        log.warning("Insert OTP failed once, retrying: %s", e)
         db.rollback()
-        log.exception("Failed to insert password_resets: %s", e)
-        raise HTTPException(status_code=500, detail="Failed to start password reset")
+        try:
+            result = db.execute(
+                text('INSERT INTO "password_resets" (user_id, otp_hash) VALUES (:uid, :h) RETURNING id'),
+                {"uid": uid, "h": code_hash},
+            )
+            otp_id = result.fetchone()[0]
+            db.commit()
+        except Exception as e2:
+            db.rollback()
+            log.exception("Failed to insert password_resets after resend succeeded: %s", e2)
+            # ณ จุดนี้ผู้ใช้ได้รับรหัสไปแล้วแต่ DB ไม่รู้จัก -> ให้ผู้ใช้กดขอรหัสใหม่
+            raise HTTPException(status_code=500, detail="Failed to save OTP, please request a new code")
 
-    # ตั้ง task ลบแถวนี้ใน 60 วินาที
+    # 4) ตั้ง task ลบแถวนี้ภายใน ~60s
     if background:
         background.add_task(_del_after, db, otp_id)
-    else:
-        _schedule_delete_otp(background, db, otp_id)  # เผื่อบางกรณี
-
-    # ส่งอีเมล
-    subject = "Your MonkPad password reset code"
-    text_body = (
-        f"Hi {user_row._mapping['username']},\n\n"
-        f"Your password reset code is: {code}\n"
-        f"This code will be valid for about {OTP_LIFETIME_SECONDS} seconds.\n\n"
-        "If you didn’t request this, you can ignore this email."
-    )
-    html_body = f"""
-    <p>Hi <b>{user_row._mapping['username']}</b>,</p>
-    <p>Your password reset code is:</p>
-    <h2 style="letter-spacing:3px; font-size: 24px;">{code}</h2>
-    <p>This code will be valid for about <b>{OTP_LIFETIME_SECONDS} seconds</b>.</p>
-    <p>If you didn’t request this, you can safely ignore this email.</p>
-    """
-    _send_email_smtp(email, subject, html_body, text_body)
 
     return {"message": "OTP sent"}
-
-
-def _del_after(db: Session, otp_id: int):
-    import time
-    time.sleep(OTP_LIFETIME_SECONDS)
-    try:
-        db.execute(text('DELETE FROM "password_resets" WHERE id = :id'), {"id": otp_id})
-        db.commit()
-    except Exception as e:
-        db.rollback()
-        log.exception("Failed to auto-delete OTP id=%s: %s", otp_id, e)
 
 
 # =======================================================
@@ -210,7 +203,7 @@ def verify_otp(payload: dict = Body(...), db: Session = Depends(get_db)):
 
     uid = user_row._mapping["id"]
 
-    # ดึง OTP ล่าสุด (ไม่มี expires column -> ถ้าโดน auto-delete แล้ว จะไม่เจอเอง)
+    # ดึง OTP ล่าสุด (หากถูก auto-delete ไปแล้วจะไม่พบ)
     otp_row = db.execute(
         text('SELECT id, otp_hash FROM "password_resets" WHERE user_id = :uid ORDER BY id DESC LIMIT 1'),
         {"uid": uid},
@@ -222,7 +215,7 @@ def verify_otp(payload: dict = Body(...), db: Session = Depends(get_db)):
     if not bcrypt.checkpw(code.encode("utf-8"), otp_row._mapping["otp_hash"].encode("utf-8")):
         raise HTTPException(status_code=400, detail="Invalid or expired code")
 
-    # ผ่าน -> ออก reset_token และลบ OTP เพื่อปิดใช้ซ้ำ
+    # ผ่าน -> ออก reset_token และลบ OTP ป้องกันใช้ซ้ำ
     token = _mint_reset_token(uid)
     try:
         db.execute(text('DELETE FROM "password_resets" WHERE id = :id'), {"id": otp_row._mapping["id"]})
@@ -258,5 +251,5 @@ def set_new_password(payload: dict = Body(...), db: Session = Depends(get_db)):
         return {"message": "Password has been reset successfully"}
     except Exception as e:
         db.rollback()
-        log.exception("Failed to set new password: %s", e)
+        log.exception("Failed to reset password: %s", e)
         raise HTTPException(status_code=500, detail="Failed to reset password")
