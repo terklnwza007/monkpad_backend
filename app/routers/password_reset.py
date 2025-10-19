@@ -12,6 +12,27 @@ import resend  # pip install resend
 
 from app.database import get_db
 
+
+import re
+
+_FROM_RE = re.compile(
+    r"^(?:[^<>@]+ <[^<>\s@]+@[^<>\s@]+\.[^<>\s@]+>|[^<>\s@]+@[^<>\s@]+\.[^<>\s@]+)$"
+)
+
+def _clean_from(value: str) -> str:
+    # ตัดช่องว่าง/บรรทัดใหม่/quote ที่หลงมา
+    v = (value or "").strip().strip("'").strip('"')
+    # ตัดช่องว่างก่อน '>' ถ้ามี
+    v = re.sub(r"\s+>", ">", v)
+    return v
+
+def _valid_from_or_fallback(env_from: str) -> str:
+    v = _clean_from(env_from)
+    if not _FROM_RE.match(v):
+        # fallback ปลอดภัยสุดของ Resend
+        return "onboarding@resend.dev"
+    return v
+
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/password", tags=["Password Reset (Resend)"])
 
@@ -21,11 +42,11 @@ RESET_TOKEN_TTL_MINUTES = 15        # อายุ reset token
 
 # Resend
 RESEND_API_KEY = os.getenv("RESEND_API_KEY")  # ต้องมี
-SMTP_SENDER = os.getenv("SMTP_SENDER", "MonkPad <onboarding@resend.dev>")  # sender ของ Resend
+SMTP_SENDER = os.getenv("SMTP_SENDER")  # sender ของ Resend
 
 # JWT สำหรับ reset token
-RESET_JWT_SECRET = os.getenv("RESET_JWT_SECRET", "change-me")
-RESET_JWT_ALG = os.getenv("RESET_JWT_ALG", "HS256")
+RESET_JWT_SECRET = os.getenv("RESET_JWT_SECRET")
+RESET_JWT_ALG = os.getenv("RESET_JWT_ALG")
 
 
 # ---------- Helpers ----------
@@ -34,7 +55,7 @@ def _now_utc():
 
 
 def _gen_otp_code() -> str:
-    return f"{secrets.randbelow(1_000_000):06d}"  # 000000-999999
+    return f"{secrets.randbelow(1_000_000):06d}"  
 
 
 def _hash_code(code: str) -> str:
@@ -48,23 +69,19 @@ def _init_resend():
 
 
 def _send_email_resend(to_email: str, subject: str, html_body: str, text_body: str = ""):
-    """
-    ส่งอีเมลผ่าน Resend
-    - ต้องใช้ sender ที่อนุญาต (เช่น onboarding@resend.dev หรือโดเมนที่ verify แล้ว)
-    """
     _init_resend()
+    from_addr = _valid_from_or_fallback(os.getenv("SMTP_SENDER"))
     try:
         resend.Emails.send({
-            "from": SMTP_SENDER,
+            "from": from_addr,
             "to": to_email,
             "subject": subject,
             "html": html_body,
-            # "text": text_body,  # ไม่จำเป็น แต่จะใส่ก็ได้
         })
     except Exception as e:
         log.exception("Resend API error: %s", e)
-        # error ที่พบบ่อย: 403 domain ไม่ verified
         raise HTTPException(status_code=500, detail="Failed to send email")
+
 
 
 def _mint_reset_token(user_id: int):
