@@ -123,19 +123,6 @@ def read_user(user_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="User not found")
     return dict(row._mapping)
 
-# =======================================================
-# โปรไฟล์ของตัวเอง (ต้องล็อกอิน)
-# =======================================================
-@router.get("/me", dependencies=[Depends(require_user)])
-def read_me(db: Session = Depends(get_db), current_user = Depends(require_user)):
-    uid = _uid_of(current_user)
-    row = db.execute(
-        text('SELECT id, username, email FROM "users" WHERE id = :id'),
-        {"id": uid}
-    ).fetchone()
-    if not row:
-        raise HTTPException(status_code=404, detail="User not found")
-    return dict(row._mapping)
 
 # =======================================================
 # เปลี่ยนรหัสผ่านของตัวเอง

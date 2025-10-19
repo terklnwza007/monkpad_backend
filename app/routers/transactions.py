@@ -199,7 +199,47 @@ def get_transactions_by_user(user_id: int, db: Session = Depends(get_db)):
     return {"transactions": result}
 
 
-# แก้ไช transaction โดยสามารถเเก้ไข value, time, date, note ,tag ได้
+def _adjust_month_results(db: Session, user_id: int, month: int, year: int, field: str, delta: int | float):
+    """
+    field: 'income' หรือ 'expense'
+    delta: จำนวนที่ต้อง + หรือ - (อาจติดลบ)
+    ถ้าไม่มีแถว month_results มาก่อนและ delta > 0 ให้ insert
+    ถ้าไม่มีแถวและ delta <= 0 ข้ามได้ (ไม่มีอะไรให้หัก)
+    ป้องกันค่าติดลบโดย clamp เป็น 0
+    """
+    if field not in ("income", "expense"):
+        raise ValueError("field must be 'income' or 'expense'")
+
+    mr = db.execute(
+        text('SELECT id, income, expense FROM "month_results" WHERE user_id = :uid AND month = :m AND year = :y'),
+        {"uid": user_id, "m": month, "y": year}
+    ).fetchone()
+
+    if mr:
+        mr_map = mr._mapping
+        current_val = mr_map[field] or 0
+        new_val = current_val + (delta or 0)
+        if new_val < 0:
+            new_val = 0
+        db.execute(
+            text(f'UPDATE "month_results" SET {field} = :val WHERE id = :id'),
+            {"val": new_val, "id": mr_map["id"]}
+        )
+    else:
+        # ยังไม่มีสรุปเดือนนี้
+        if delta and delta > 0:
+            if field == "income":
+                db.execute(
+                    text('INSERT INTO "month_results" (user_id, month, year, income, expense) VALUES (:uid, :m, :y, :inc, 0)'),
+                    {"uid": user_id, "m": month, "y": year, "inc": delta}
+                )
+            else:
+                db.execute(
+                    text('INSERT INTO "month_results" (user_id, month, year, income, expense) VALUES (:uid, :m, :y, 0, :exp)'),
+                    {"uid": user_id, "m": month, "y": year, "exp": delta}
+                )
+        # ถ้า delta <= 0 ไม่ต้องสร้างแถวใหม่ (เพื่อไม่ให้ได้ค่าติดลบโดยไม่มีฐาน)
+
 @router.put("/update/{transaction_id}")
 def update_transaction(transaction_id: int, data: dict = Body(...), db: Session = Depends(get_db)):
     value = data.get("value")
@@ -225,7 +265,7 @@ def update_transaction(transaction_id: int, data: dict = Body(...), db: Session 
         except ValueError:
             raise HTTPException(status_code=400, detail="date must be in YYYY-MM-DD format")
 
-    # ตรวจสอบว่า transaction มีอยู่จริงไหม
+    # ดึงข้อมูล transaction เดิม
     tr = db.execute(
         text('SELECT id, user_id, tag_id, value, date FROM "transactions" WHERE id = :tid'),
         {"tid": transaction_id}
@@ -254,9 +294,9 @@ def update_transaction(transaction_id: int, data: dict = Body(...), db: Session 
     ).fetchone()
     if not old_tag_row:
         raise HTTPException(status_code=400, detail="Old Tag ID does not exist for this user")
-    old_tag_type = old_tag_row._mapping["type"]
+    old_tag_type = old_tag_row._mapping["type"]  # 'income' หรือ 'expense'
 
-    # หา type ของแท็กใหม่ (ถ้าเปลี่ยนแท็ก)
+    # หา type ของแท็กใหม่
     if new_tag_id != old_tag_id:
         new_tag_row = db.execute(
             text('SELECT type FROM "tags" WHERE id = :tid AND user_id = :uid'),
@@ -267,7 +307,8 @@ def update_transaction(transaction_id: int, data: dict = Body(...), db: Session 
         new_tag_type = new_tag_row._mapping["type"]
     else:
         new_tag_type = old_tag_type
-    # อัพเดต transaction
+
+    # 1) อัปเดตตัว transaction เอง
     db.execute(
         text('''
             UPDATE "transactions"
@@ -280,113 +321,43 @@ def update_transaction(transaction_id: int, data: dict = Body(...), db: Session 
         '''),
         {"new_tid": new_tag_id, "v": new_value, "ti": time_obj, "d": new_date, "n": note, "tid": transaction_id}
     )
-    # อัพเดตยอดใน tags และ month_results
+
+    # 2) อัปเดตตาราง tags (ยอดรวมของแท็ก ไม่ขึ้นกับเดือน)
     if old_tag_id == new_tag_id:
-        # ถ้าแท็กไม่เปลี่ยนแปลง แค่ปรับยอดตามค่าที่เปลี่ยน
-        diff = new_value - old_value
+        diff = (new_value or 0) - (old_value or 0)
         if diff != 0:
             db.execute(
                 text('UPDATE "tags" SET value = value + :diff WHERE id = :tid AND user_id = :uid'),
                 {"diff": diff, "tid": old_tag_id, "uid": user_id}
             )
-            # อัพเดต month_results
-            if old_tag_type == "income":
-                mr = db.execute(
-                    text('SELECT id, income FROM "month_results" WHERE user_id = :uid AND month = :m AND year = :y'),
-                    {"uid": user_id, "m": old_month, "y": old_year}
-                ).fetchone()
-                if mr:
-                    new_income = mr.income + diff
-                    if new_income < 0:
-                        new_income = 0
-                    db.execute(
-                        text('UPDATE "month_results" SET income = :val WHERE id = :id'),
-                        {"val": new_income, "id": mr.id}
-                    )
-            else:  # expense
-                mr = db.execute(
-                    text('SELECT id, expense FROM "month_results" WHERE user_id = :uid AND month = :m AND year = :y'),
-                    {"uid": user_id, "m": old_month, "y": old_year}
-                ).fetchone()
-                if mr:
-                    new_expense = mr.expense + diff
-                    if new_expense < 0:
-                        new_expense = 0
-                    db.execute(
-                        text('UPDATE "month_results" SET expense = :val WHERE id = :id'),
-                        {"val": new_expense, "id": mr.id}
-                    )
     else:
-        # ถ้าแท็กเปลี่ยนแปลง ต้องลดยอดจากแท็กเก่าและเดือนเก่า
+        # หักออกจากแท็กเก่าแล้วบวกให้แท็กใหม่
         db.execute(
-            text('UPDATE "tags" SET value = value - :v WHERE id = :tid AND user_id = :uid'),
+            text('UPDATE "tags" SET value = GREATEST(value - :v, 0) WHERE id = :tid AND user_id = :uid'),
             {"v": old_value, "tid": old_tag_id, "uid": user_id}
         )
-        if old_tag_type == "income":
-            mr = db.execute(
-                text('SELECT id, income FROM "month_results" WHERE user_id = :uid AND month = :m AND year = :y'),
-                {"uid": user_id, "m": old_month, "y": old_year}
-            ).fetchone()
-            if mr:
-                new_income = mr.income - old_value
-                if new_income < 0:
-                    new_income = 0
-                db.execute(
-                    text('UPDATE "month_results" SET income = :val WHERE id = :id'),
-                    {"val": new_income, "id": mr.id}
-                )
-        else:  # expense
-            mr = db.execute(
-                text('SELECT id, expense FROM "month_results" WHERE user_id = :uid AND month = :m AND year = :y'),
-                {"uid": user_id, "m": old_month, "y": old_year}
-            ).fetchone()
-            if mr:
-                new_expense = mr.expense - old_value
-                if new_expense < 0:
-                    new_expense = 0
-                db.execute(
-                    text('UPDATE "month_results" SET expense = :val WHERE id = :id'),
-                    {"val": new_expense, "id": mr.id}
-                )
-        # แล้วเพิ่มยอดให้แท็กใหม่และเดือนใหม่
         db.execute(
             text('UPDATE "tags" SET value = value + :v WHERE id = :tid AND user_id = :uid'),
             {"v": new_value, "tid": new_tag_id, "uid": user_id}
         )
-        if new_tag_type == "income":
-            mr = db.execute(
-                text('SELECT id, income FROM "month_results" WHERE user_id = :uid AND month = :m AND year = :y'),
-                {"uid": user_id, "m": new_month, "y": new_year}
-            ).fetchone()
-            if mr:
-                new_income = mr.income + new_value
-                db.execute(
-                    text('UPDATE "month_results" SET income = :val WHERE id = :id'),
-                    {"val": new_income, "id": mr.id}
-                )
-            else:
-                db.execute(
-                    text('INSERT INTO "month_results" (user_id, month, year, income, expense) VALUES (:uid, :m, :y, :inc, 0)'),
-                    {"uid": user_id, "m": new_month, "y": new_year, "inc": new_value}
-                )
-        else:  # expense
-            mr = db.execute(
-                text('SELECT id, expense FROM "month_results" WHERE user_id = :uid AND month = :m AND year = :y'),
-                {"uid": user_id, "m": new_month, "y": new_year}
-            ).fetchone()
-            if mr:
-                new_expense = mr.expense + new_value
-                db.execute(
-                    text('UPDATE "month_results" SET expense = :val WHERE id = :id'),
-                    {"val": new_expense, "id": mr.id}
-                )
-            else:
-                db.execute(
-                    text('INSERT INTO "month_results" (user_id, month, year, income, expense) VALUES (:uid, :m, :y, 0, :exp)'),
-                    {"uid": user_id, "m": new_month, "y": new_year, "exp": new_value}
-                )
+
+    # 3) อัปเดต month_results ให้ถูก bucket (เดือน/ปี + income/expense)
+    old_field = "income" if old_tag_type == "income" else "expense"
+    new_field = "income" if new_tag_type == "income" else "expense"
+
+    same_bucket = (old_month == new_month) and (old_year == new_year) and (old_field == new_field)
+
+    if same_bucket:
+        # เดิมกับใหม่อยู่ bucket เดียวกัน → ปรับด้วย diff พอ
+        diff = (new_value or 0) - (old_value or 0)
+        if diff != 0:
+            _adjust_month_results(db, user_id, old_month, old_year, old_field, diff)
+    else:
+        # คนละ bucket → หักออกที่เก่า และบวกเข้า bucket ใหม่
+        if old_value:
+            _adjust_month_results(db, user_id, old_month, old_year, old_field, -old_value)
+        if new_value:
+            _adjust_month_results(db, user_id, new_month, new_year, new_field, +new_value)
+
     db.commit()
     return {"message": "Transaction updated successfully"}
-# ================================================
-
-
